@@ -936,9 +936,19 @@ def generate_password():
 
 
 if __name__ == '__main__':
+    cert_dir = os.path.join(os.path.dirname(__file__), 'certs')
+    cert_file = os.path.join(cert_dir, 'cert.pem')
+    key_file = os.path.join(cert_dir, 'key.pem')
+    use_ssl = os.path.exists(cert_file) and os.path.exists(key_file)
+
     print("=" * 55)
     print("  Awtoyoly Vault - IT Credential Manager")
-    print("  http://0.0.0.0:5100")
+    print(f"  {'https' if use_ssl else 'http'}://0.0.0.0:5111")
     print("  Default login: admin / admin123")
     print("=" * 55)
-    app.run(host='0.0.0.0', port=5111, debug=False, threaded=True)
+
+    if use_ssl:
+        app.run(host='0.0.0.0', port=5111, debug=False, threaded=True,
+                ssl_context=(cert_file, key_file))
+    else:
+        app.run(host='0.0.0.0', port=5111, debug=False, threaded=True)

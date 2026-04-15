@@ -3,4 +3,5 @@ __pycache__/
 *.db
 .env
 .jwt_secret
+certs/
 instance/
