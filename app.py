@@ -635,6 +635,9 @@ def create_credential():
          d.get('notes', ''), d.get('tags', ''),
          d.get('icon', 'server'), d.get('color'),
          uid, uid))
+    # Record creation in history
+    conn.execute("INSERT INTO credential_history (credential_id, field_name, old_value, new_value, changed_by) VALUES (?,?,?,?,?)",
+                 (c.lastrowid, 'created', '', d.get('name', ''), uid))
     conn.commit()
     cid = c.lastrowid
     conn.close()
@@ -657,10 +660,15 @@ def update_credential(cid):
         conn.close()
         return jsonify({"error": "Bulunamadi"}), 404
 
-    # Track password change in history
+    # Track all changes in history
+    track_fields = ['name', 'username', 'ip_address', 'port', 'protocol', 'notes', 'branch_id', 'device_type']
+    for field in track_fields:
+        if field in d and str(d[field]) != str(old[field]):
+            conn.execute("INSERT INTO credential_history (credential_id, field_name, old_value, new_value, changed_by) VALUES (?,?,?,?,?)",
+                         (cid, field, str(old[field] or ''), str(d[field] or ''), uid))
     if 'password' in d and d['password']:
         conn.execute("INSERT INTO credential_history (credential_id, field_name, old_value, new_value, changed_by) VALUES (?,?,?,?,?)",
-                     (cid, 'password', '***', '***', uid))
+                     (cid, 'password', '********', '********', uid))
 
     updates = {
         'name': d.get('name', old['name']),
@@ -812,17 +820,38 @@ def set_user_access(uid):
 @role_required('admin')
 def get_user_credential_access(uid):
     conn = get_db()
-    # All credentials with user's access status
+    # All credentials with user's access status, grouped by branch
     rows = conn.execute("""SELECT c.id, c.name, c.device_type, c.ip_address, c.icon,
-        b.name as branch_name, b.icon as branch_icon,
+        c.branch_id,
+        b.name as branch_name, b.icon as branch_icon, b.color as branch_color,
         CASE WHEN uca.user_id IS NOT NULL THEN 1 ELSE 0 END as has_access,
         COALESCE(uca.permission, 'none') as permission
         FROM credentials c
         LEFT JOIN branches b ON c.branch_id=b.id
         LEFT JOIN user_credential_access uca ON c.id=uca.credential_id AND uca.user_id=?
         ORDER BY b.name, c.name""", (uid,)).fetchall()
+    # Branch access
+    branch_access = {}
+    for r in conn.execute("SELECT branch_id, permission FROM user_branch_access WHERE user_id=?", (uid,)).fetchall():
+        branch_access[r['branch_id']] = r['permission']
     conn.close()
-    return jsonify([dict(r) for r in rows])
+
+    # Group by branch
+    branches = {}
+    for r in rows:
+        bid = r['branch_id'] or 0
+        if bid not in branches:
+            branches[bid] = {
+                'id': bid,
+                'name': r['branch_name'] or 'Kategorisiz',
+                'icon': r['branch_icon'] or 'folder',
+                'color': r['branch_color'] or '#8f99a8',
+                'permission': branch_access.get(bid, 'none'),
+                'credentials': []
+            }
+        branches[bid]['credentials'].append(dict(r))
+
+    return jsonify(list(branches.values()))
 
 @app.route('/api/users/<int:uid>/credential-access', methods=['PUT'])
 @role_required('admin')
@@ -862,6 +891,21 @@ def bulk_set_credential_access(uid):
     log_audit(int(get_jwt_identity()), claims.get('username'), 'bulk_credential_access', 'user', uid,
               f'{len(d.get("credentials",[]))} credentials', ip=request.remote_addr)
     return jsonify({"success": True})
+
+
+# ─── Credential History ──────────────────────────────────────────────
+
+@app.route('/api/credentials/<int:cid>/history')
+@jwt_required()
+def get_credential_history(cid):
+    conn = get_db()
+    rows = conn.execute("""SELECT ch.*, u.username, u.display_name
+        FROM credential_history ch
+        LEFT JOIN users u ON ch.changed_by=u.id
+        WHERE ch.credential_id=?
+        ORDER BY ch.id DESC LIMIT 50""", (cid,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 
 # ─── Password Verification (re-auth for viewing passwords) ──────────
