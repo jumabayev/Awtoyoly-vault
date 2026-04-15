@@ -716,11 +716,15 @@ async function apiFetch(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
   if (token) headers['Authorization'] = 'Bearer ' + token;
   const res = await fetch(API + path, { ...opts, headers });
-  if (res.status === 401) { clearToken(); showLogin(); throw new Error('Unauthorized'); }
   if (res.status === 204) return null;
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || data.message || 'Request failed');
-  if (data.access_token) setToken(data.access_token);
+  let data;
+  try { data = await res.json(); } catch { data = {}; }
+  if ((res.status === 401 || res.status === 422) && path !== '/auth/login') {
+    clearToken(); showLogin(); throw new Error('Oturum suresi doldu');
+  }
+  if (!res.ok && !data.requires_2fa && !data.token) {
+    throw new Error(data.error || data.message || 'Request failed');
+  }
   return data;
 }
 
@@ -737,8 +741,24 @@ async function doLogin(e) {
       totp_code: document.getElementById('loginTotp').value.trim() || undefined
     };
     const data = await apiFetch('/auth/login', { method: 'POST', body: JSON.stringify(body) });
-    setToken(data.access_token);
-    await initApp();
+    if (data.requires_2fa) {
+      document.getElementById('loginTotp').style.display = 'block';
+      document.getElementById('loginTotp').placeholder = '2FA kodu gerekli';
+      document.getElementById('loginTotp').focus();
+      errEl.textContent = '2FA kodu girin';
+      errEl.style.display = 'block';
+      btn.disabled = false; btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> Giris Yap';
+      return;
+    }
+    if (data.error) { throw new Error(data.error); }
+    const tk = data.token || data.access_token;
+    if (!tk) { throw new Error('Token alinamadi'); }
+    setToken(tk);
+    currentUser = data.user || await apiFetch('/auth/me');
+    showApp();
+    updateUserUI();
+    applyRoleVisibility();
+    navigate('dashboard');
   } catch (err) {
     errEl.textContent = err.message; errEl.style.display = 'block';
   } finally {
@@ -976,13 +996,13 @@ function renderCredGrid() {
         <span style="font-size:.7rem;color:var(--text-dim)">${escHtml(dt.label)}</span>
       </div>
       <div class="cred-card-meta">
-        ${c.ip ? `<span><i class="fas fa-network-wired"></i> ${escHtml(c.ip)}</span>` : ''}
+        ${c.ip_address ? `<span><i class="fas fa-network-wired"></i> ${escHtml(c.ip_address)}</span>` : ''}
         ${c.username ? `<span><i class="fas fa-user"></i> ${escHtml(c.username)}</span>` : ''}
         ${c.port ? `<span><i class="fas fa-plug"></i> :${c.port}</span>` : ''}
       </div>
       <div class="cred-detail">
         ${c.hostname ? detailRow('Host', c.hostname) : ''}
-        ${c.ip ? detailRowCopy('IP', c.ip) : ''}
+        ${c.ip_address ? detailRowCopy('IP', c.ip_address) : ''}
         ${c.username ? detailRowCopy('User', c.username) : ''}
         <div class="detail-row">
           <span class="detail-label">Password</span>
@@ -1034,7 +1054,7 @@ function openCredModal(cred) {
     bs.value = cred.branch_id || '';
     document.getElementById('credDeviceType').value = cred.device_type || 'other';
     document.getElementById('credHostname').value = cred.hostname || '';
-    document.getElementById('credIP').value = cred.ip || '';
+    document.getElementById('credIP').value = cred.ip_address || '';
     document.getElementById('credPort').value = cred.port || '';
     document.getElementById('credURL').value = cred.url || '';
     document.getElementById('credUsername').value = cred.username || '';
@@ -1062,14 +1082,14 @@ async function editCred(id) {
 async function saveCred() {
   const id = document.getElementById('credEditId').value;
   const tagsRaw = document.getElementById('credTags').value;
-  const tags = tagsRaw ? tagsRaw.split(',').map(t=>t.trim()).filter(Boolean) : [];
+  const tags = tagsRaw ? tagsRaw.split(',').map(t=>t.trim()).filter(Boolean).join(',') : '';
   const body = {
     name: document.getElementById('credName').value.trim(),
     branch_id: parseInt(document.getElementById('credBranch').value) || null,
     device_type: document.getElementById('credDeviceType').value,
     hostname: document.getElementById('credHostname').value.trim(),
-    ip: document.getElementById('credIP').value.trim(),
-    port: parseInt(document.getElementById('credPort').value) || null,
+    ip_address: document.getElementById('credIP').value.trim(),
+    port: document.getElementById('credPort').value.trim(),
     url: document.getElementById('credURL').value.trim(),
     username: document.getElementById('credUsername').value.trim(),
     password: document.getElementById('credPassword').value,
@@ -1408,8 +1428,21 @@ setInterval(async () => {
 }, 5 * 60 * 1000);
 
 /* ========== BOOT ========== */
-(function boot() {
-  if (getToken()) { initApp(); } else { showLogin(); }
+(async function boot() {
+  if (getToken()) {
+    try {
+      currentUser = await apiFetch('/auth/me');
+      showApp();
+      updateUserUI();
+      applyRoleVisibility();
+      navigate('dashboard');
+    } catch {
+      clearToken();
+      showLogin();
+    }
+  } else {
+    showLogin();
+  }
 })();
 </script>
 </body>

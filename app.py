@@ -16,8 +16,13 @@ app = Flask(__name__)
 CORS(app)
 
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET', secrets.token_hex(32))
-app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=8)
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)  # 30dk inaktif = çıkış
 jwt = JWTManager(app)
+
+# Brute force protection
+login_attempts = {}  # {ip: {'count': N, 'locked_until': datetime}}
+MAX_ATTEMPTS = 5
+LOCK_MINUTES = 15
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'vault.db')
 MASTER_KEY = os.environ.get('VAULT_MASTER_KEY', 'Awtoyoly-Vault-Master-Key-2026!!')
@@ -133,12 +138,45 @@ def init_db():
         PRIMARY KEY (user_id, branch_id)
     )''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS device_types (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        icon TEXT DEFAULT 'laptop',
+        color TEXT DEFAULT '#8f99a8',
+        sort_order INTEGER DEFAULT 0
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS user_credential_access (
+        user_id INTEGER,
+        credential_id INTEGER,
+        permission TEXT DEFAULT 'read',
+        PRIMARY KEY (user_id, credential_id)
+    )''')
+
     # Default admin user (admin / admin123) - change on first login!
     admin_exists = c.execute("SELECT id FROM users WHERE username='admin'").fetchone()
     if not admin_exists:
         pw_hash = bcrypt.hashpw(b'admin123', bcrypt.gensalt()).decode()
         c.execute("INSERT INTO users (username, password_hash, display_name, role) VALUES (?,?,?,?)",
                   ('admin', pw_hash, 'Administrator', 'admin'))
+
+    # Default device types
+    if not c.execute("SELECT id FROM device_types").fetchone():
+        for name, icon, color in [
+            ('server', 'server', '#22c55e'),
+            ('firewall', 'shield-halved', '#f59e0b'),
+            ('switch', 'network-wired', '#06b6d4'),
+            ('nvr', 'video', '#a855f7'),
+            ('pbx', 'phone', '#ec4899'),
+            ('esxi', 'cubes', '#ef4444'),
+            ('router', 'wifi', '#3b82f6'),
+            ('printer', 'print', '#6b7280'),
+            ('camera', 'camera', '#8b5cf6'),
+            ('access-control', 'door-open', '#f97316'),
+            ('workstation', 'desktop', '#64748b'),
+            ('other', 'laptop', '#8f99a8'),
+        ]:
+            c.execute("INSERT INTO device_types (name, icon, color) VALUES (?,?,?)", (name, icon, color))
 
     # Default branches
     if not c.execute("SELECT id FROM branches").fetchone():
@@ -198,16 +236,36 @@ def login():
     username = d.get('username', '').strip()
     password = d.get('password', '').strip()
     totp_code = d.get('totp_code', '').strip()
+    client_ip = request.remote_addr
 
     if not username or not password:
         return jsonify({"error": "Kullanici adi ve sifre gerekli"}), 400
+
+    # Brute force check
+    if client_ip in login_attempts:
+        info = login_attempts[client_ip]
+        if info.get('locked_until') and datetime.now() < info['locked_until']:
+            remaining = int((info['locked_until'] - datetime.now()).total_seconds() / 60) + 1
+            return jsonify({"error": f"Cok fazla yanlis giris. {remaining} dakika bekleyin."}), 429
 
     conn = get_db()
     user = conn.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
     conn.close()
 
     if not user or not bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
-        return jsonify({"error": "Yanlis kullanici adi veya sifre"}), 401
+        # Track failed attempt
+        if client_ip not in login_attempts:
+            login_attempts[client_ip] = {'count': 0}
+        login_attempts[client_ip]['count'] += 1
+        if login_attempts[client_ip]['count'] >= MAX_ATTEMPTS:
+            login_attempts[client_ip]['locked_until'] = datetime.now() + timedelta(minutes=LOCK_MINUTES)
+            log_audit(0, username, 'login_locked', 'user', 0, username, f'IP locked for {LOCK_MINUTES}min', client_ip)
+            return jsonify({"error": f"Cok fazla yanlis giris. {LOCK_MINUTES} dakika kilitlendiz."}), 429
+        remaining = MAX_ATTEMPTS - login_attempts[client_ip]['count']
+        return jsonify({"error": f"Yanlis kullanici adi veya sifre. {remaining} deneme kaldi."}), 401
+
+    # Reset attempts on success
+    login_attempts.pop(client_ip, None)
 
     # 2FA check
     if user['totp_enabled']:
@@ -467,10 +525,28 @@ def list_credentials():
     branch_id = request.args.get('branch_id', '')
     q = request.args.get('q', '').lower()
     device_type = request.args.get('device_type', '')
+    uid = int(get_jwt_identity())
+    claims = get_jwt()
+    user_role = claims.get('role', 'viewer')
 
     conn = get_db()
+
+    # Branch access filter for non-admin users
+    if user_role != 'admin':
+        allowed_branches = [r['branch_id'] for r in
+            conn.execute("SELECT branch_id FROM user_branch_access WHERE user_id=?", (uid,)).fetchall()]
+        if not allowed_branches:
+            conn.close()
+            return jsonify([])
+
     query = "SELECT c.*, b.name as branch_name, b.icon as branch_icon FROM credentials c LEFT JOIN branches b ON c.branch_id=b.id WHERE 1=1"
     params = []
+
+    # Non-admin: filter by allowed branches
+    if user_role != 'admin' and allowed_branches:
+        placeholders = ','.join('?' * len(allowed_branches))
+        query += f" AND c.branch_id IN ({placeholders})"
+        params.extend(allowed_branches)
 
     if branch_id:
         query += " AND c.branch_id=?"
@@ -486,8 +562,9 @@ def list_credentials():
     results = []
     for r in rows:
         d = dict(r)
-        # Decrypt password for response
-        d['password'] = decrypt(d.pop('password_enc', ''))
+        # Don't send password in list - only via /credentials/:id
+        d.pop('password_enc', '')
+        d['password'] = '••••••••'
         # Search filter
         if q:
             searchable = f"{d.get('name','')} {d.get('hostname','')} {d.get('ip_address','')} {d.get('username','')} {d.get('notes','')} {d.get('tags','')}".lower()
@@ -640,6 +717,89 @@ def dashboard():
 
 # ─── Password Generator ─────────────────────────────────────────────
 
+# ─── Device Types ────────────────────────────────────────────────────
+
+@app.route('/api/device-types')
+@jwt_required()
+def list_device_types():
+    conn = get_db()
+    types = conn.execute("SELECT * FROM device_types ORDER BY sort_order, name").fetchall()
+    conn.close()
+    return jsonify([dict(t) for t in types])
+
+@app.route('/api/device-types', methods=['POST'])
+@role_required('admin')
+def create_device_type():
+    d = request.json
+    conn = get_db()
+    try:
+        conn.execute("INSERT INTO device_types (name, icon, color) VALUES (?,?,?)",
+                     (d.get('name', ''), d.get('icon', 'laptop'), d.get('color', '#8f99a8')))
+        conn.commit()
+        return jsonify({"success": True})
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "Bu cihaz tipi zaten var"}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/device-types/<int:did>', methods=['DELETE'])
+@role_required('admin')
+def delete_device_type(did):
+    conn = get_db()
+    conn.execute("DELETE FROM device_types WHERE id=?", (did,))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True})
+
+
+# ─── User Branch Access ─────────────────────────────────────────────
+
+@app.route('/api/users/<int:uid>/access')
+@role_required('admin')
+def get_user_access(uid):
+    conn = get_db()
+    branches = conn.execute("""SELECT b.id, b.name, b.icon, b.color,
+        COALESCE(uba.permission, 'none') as permission
+        FROM branches b LEFT JOIN user_branch_access uba ON b.id=uba.branch_id AND uba.user_id=?
+        ORDER BY b.name""", (uid,)).fetchall()
+    conn.close()
+    return jsonify([dict(b) for b in branches])
+
+@app.route('/api/users/<int:uid>/access', methods=['PUT'])
+@role_required('admin')
+def set_user_access(uid):
+    d = request.json  # {"branch_id": 1, "permission": "read|write|none"}
+    conn = get_db()
+    branch_id = d.get('branch_id')
+    permission = d.get('permission', 'none')
+
+    conn.execute("DELETE FROM user_branch_access WHERE user_id=? AND branch_id=?", (uid, branch_id))
+    if permission != 'none':
+        conn.execute("INSERT INTO user_branch_access (user_id, branch_id, permission) VALUES (?,?,?)",
+                     (uid, branch_id, permission))
+    conn.commit()
+    conn.close()
+    claims = get_jwt()
+    log_audit(int(get_jwt_identity()), claims.get('username'), 'set_access', 'user', uid, f'branch:{branch_id}={permission}', ip=request.remote_addr)
+    return jsonify({"success": True})
+
+
+# ─── Password Verification (re-auth for viewing passwords) ──────────
+
+@app.route('/api/auth/verify-password', methods=['POST'])
+@jwt_required()
+def verify_password():
+    """Re-authenticate before viewing sensitive data"""
+    uid = int(get_jwt_identity())
+    password = request.json.get('password', '')
+    conn = get_db()
+    user = conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,)).fetchone()
+    conn.close()
+    if user and bcrypt.checkpw(password.encode(), user['password_hash'].encode()):
+        return jsonify({"verified": True})
+    return jsonify({"verified": False, "error": "Yanlis sifre"}), 401
+
+
 @app.route('/api/generate-password')
 def generate_password():
     length = request.args.get('length', 20, type=int)
@@ -655,4 +815,4 @@ if __name__ == '__main__':
     print("  http://0.0.0.0:5100")
     print("  Default login: admin / admin123")
     print("=" * 55)
-    app.run(host='0.0.0.0', port=5100, debug=False, threaded=True)
+    app.run(host='0.0.0.0', port=5111, debug=False, threaded=True)
