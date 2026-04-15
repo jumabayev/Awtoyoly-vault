@@ -685,6 +685,33 @@ tr:hover td{background:var(--bg-hover)}
   </div>
 </div>
 
+<!-- Access Management Modal -->
+<div class="modal-overlay" id="accessModal">
+  <div class="modal" style="max-width:600px">
+    <div class="modal-header">
+      <h3 id="accessModalTitle"><i class="fas fa-key" style="color:var(--warning)"></i> Erisim Yonetimi</h3>
+      <button class="modal-close" onclick="closeModal('accessModal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow-y:auto">
+      <div style="margin-bottom:16px">
+        <h4 style="font-size:13px;color:var(--text-dim);margin-bottom:8px"><i class="fas fa-folder" style="margin-right:6px"></i>Branch Erisimleri</h4>
+        <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Kullanicinin hangi branch/kategorileri gorebilecegini secin:</p>
+        <div id="branchAccessList"></div>
+      </div>
+      <hr style="border-color:var(--border);margin:16px 0">
+      <div>
+        <h4 style="font-size:13px;color:var(--text-dim);margin-bottom:8px"><i class="fas fa-lock" style="margin-right:6px"></i>Credential Erisimleri</h4>
+        <p style="font-size:11px;color:var(--text-dim);margin-bottom:8px">Tiklayin = erisim ver, bos = erisim yok. Branch erisimi verilmis ise o branch altindaki tum credential'lar da gorunur.</p>
+        <div id="credAccessList"></div>
+      </div>
+    </div>
+    <div class="modal-footer" style="padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn-ghost" onclick="closeModal('accessModal')">Iptal</button>
+      <button class="btn" onclick="saveAccess()"><i class="fas fa-save"></i> Kaydet</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ========== STATE ========== */
 const API = '/api';
@@ -1255,8 +1282,9 @@ function renderUserTable(users) {
       <td>${u.two_factor_enabled ? '<i class="fas fa-check-circle" style="color:var(--success)"></i>' : '<i class="fas fa-times-circle" style="color:var(--text-dim)"></i>'}</td>
       <td style="font-size:.8rem">${relTime(u.last_login)}</td>
       <td>
-        <button class="btn-ghost btn-sm" onclick="editUser(${u.id})"><i class="fas fa-pen"></i></button>
-        <button class="btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteUser(${u.id},'${escJs(u.username)}')"><i class="fas fa-trash"></i></button>
+        <button class="btn-ghost btn-sm" onclick="openAccessModal(${u.id},'${escJs(u.username)}')" title="Erisim Yonet"><i class="fas fa-key" style="color:var(--warning)"></i></button>
+        <button class="btn-ghost btn-sm" onclick="editUser(${u.id})" title="Duzenle"><i class="fas fa-pen"></i></button>
+        <button class="btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteUser(${u.id},'${escJs(u.username)}')" title="Sil"><i class="fas fa-trash"></i></button>
       </td>
     </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-dim)">No users</td></tr>';
 }
@@ -1309,6 +1337,80 @@ function deleteUser(id, name) {
       loadUsers();
     } catch (e) { toast(e.message, 'error'); }
   });
+}
+
+/* ========== ACCESS MANAGEMENT ========== */
+let accessUserId = null;
+let accessUsername = '';
+
+async function openAccessModal(uid, username) {
+  accessUserId = uid;
+  accessUsername = username;
+  document.getElementById('accessModalTitle').textContent = `Erisim Yonetimi: ${username}`;
+
+  // Load branch access
+  try {
+    const branches = await apiFetch(`/users/${uid}/access`);
+    document.getElementById('branchAccessList').innerHTML = branches.map(b => `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+        <i class="fas fa-${b.icon}" style="color:${b.color};width:20px;text-align:center"></i>
+        <span style="flex:1;font-size:13px;font-weight:500">${escHtml(b.name)}</span>
+        <select class="branch-perm-select" data-bid="${b.id}" style="padding:4px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:11px">
+          <option value="none" ${b.permission==='none'?'selected':''}>Erisim Yok</option>
+          <option value="read" ${b.permission==='read'?'selected':''}>Okuma</option>
+          <option value="write" ${b.permission==='write'?'selected':''}>Okuma+Yazma</option>
+        </select>
+      </div>
+    `).join('') || '<div style="color:var(--text-dim)">Branch bulunamadi</div>';
+  } catch (e) { console.error(e); }
+
+  // Load credential access
+  try {
+    const creds = await apiFetch(`/users/${uid}/credential-access`);
+    document.getElementById('credAccessList').innerHTML = creds.length ? creds.map(c => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-primary);border:1px solid var(--border);border-radius:6px;margin-bottom:4px">
+        <input type="checkbox" class="cred-access-check" data-cid="${c.id}" ${c.has_access?'checked':''} style="accent-color:var(--primary)">
+        <i class="fas fa-${c.icon || 'server'}" style="color:var(--text-dim);width:16px;text-align:center;font-size:11px"></i>
+        <span style="flex:1;font-size:12px">${escHtml(c.name)}</span>
+        <span style="font-size:10px;color:var(--text-dim)">${escHtml(c.ip_address || '')}</span>
+        <span style="font-size:9px;color:var(--text-dim);background:var(--bg-secondary);padding:1px 6px;border-radius:3px">${escHtml(c.branch_name || '-')}</span>
+      </div>
+    `).join('') : '<div style="color:var(--text-dim);font-size:12px">Henuz credential eklenmemis</div>';
+  } catch (e) { console.error(e); }
+
+  openModal('accessModal');
+}
+
+async function saveAccess() {
+  const uid = accessUserId;
+  if (!uid) return;
+
+  // Save branch access
+  const branchSelects = document.querySelectorAll('.branch-perm-select');
+  for (const sel of branchSelects) {
+    try {
+      await apiFetch(`/users/${uid}/access`, {
+        method: 'PUT',
+        body: JSON.stringify({ branch_id: parseInt(sel.dataset.bid), permission: sel.value })
+      });
+    } catch (e) { console.error(e); }
+  }
+
+  // Save credential access
+  const credChecks = document.querySelectorAll('.cred-access-check');
+  const credentials = [];
+  for (const chk of credChecks) {
+    credentials.push({ id: parseInt(chk.dataset.cid), permission: chk.checked ? 'read' : 'none' });
+  }
+  try {
+    await apiFetch(`/users/${uid}/credential-access/bulk`, {
+      method: 'PUT',
+      body: JSON.stringify({ credentials })
+    });
+  } catch (e) { console.error(e); }
+
+  closeModal('accessModal');
+  toast(`${accessUsername} erisim yetkileri kaydedildi`, 'success');
 }
 
 /* ========== AUDIT ========== */

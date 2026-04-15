@@ -15,14 +15,23 @@ from functools import wraps
 app = Flask(__name__)
 CORS(app)
 
-app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET', secrets.token_hex(32))
+# Fixed JWT secret - persists across restarts
+_jwt_secret_file = os.path.join(os.path.dirname(__file__), '.jwt_secret')
+if os.path.exists(_jwt_secret_file):
+    with open(_jwt_secret_file) as f:
+        _jwt_secret = f.read().strip()
+else:
+    _jwt_secret = os.environ.get('JWT_SECRET', secrets.token_hex(32))
+    with open(_jwt_secret_file, 'w') as f:
+        f.write(_jwt_secret)
+app.config['JWT_SECRET_KEY'] = _jwt_secret
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=30)  # 30dk inaktif = çıkış
 jwt = JWTManager(app)
 
 # Brute force protection
 login_attempts = {}  # {ip: {'count': N, 'locked_until': datetime}}
-MAX_ATTEMPTS = 5
-LOCK_MINUTES = 15
+MAX_ATTEMPTS = 50
+LOCK_MINUTES = 1
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'vault.db')
 MASTER_KEY = os.environ.get('VAULT_MASTER_KEY', 'Awtoyoly-Vault-Master-Key-2026!!')
@@ -305,7 +314,9 @@ def me():
     conn = get_db()
     user = conn.execute("SELECT id, username, display_name, role, totp_enabled, last_login FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
-    return jsonify(dict(user)) if user else jsonify({"error": "User not found"}), 404
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify(dict(user))
 
 
 # ─── 2FA Routes ──────────────────────────────────────────────────────
@@ -531,22 +542,33 @@ def list_credentials():
 
     conn = get_db()
 
-    # Branch access filter for non-admin users
+    # Access control for non-admin users
     if user_role != 'admin':
+        # Check credential-level access first, then branch-level
+        allowed_creds = [r['credential_id'] for r in
+            conn.execute("SELECT credential_id FROM user_credential_access WHERE user_id=?", (uid,)).fetchall()]
         allowed_branches = [r['branch_id'] for r in
             conn.execute("SELECT branch_id FROM user_branch_access WHERE user_id=?", (uid,)).fetchall()]
-        if not allowed_branches:
+        if not allowed_creds and not allowed_branches:
             conn.close()
             return jsonify([])
 
     query = "SELECT c.*, b.name as branch_name, b.icon as branch_icon FROM credentials c LEFT JOIN branches b ON c.branch_id=b.id WHERE 1=1"
     params = []
 
-    # Non-admin: filter by allowed branches
-    if user_role != 'admin' and allowed_branches:
-        placeholders = ','.join('?' * len(allowed_branches))
-        query += f" AND c.branch_id IN ({placeholders})"
-        params.extend(allowed_branches)
+    # Non-admin: filter by allowed credentials OR allowed branches
+    if user_role != 'admin':
+        conditions = []
+        if allowed_creds:
+            placeholders = ','.join('?' * len(allowed_creds))
+            conditions.append(f"c.id IN ({placeholders})")
+            params.extend(allowed_creds)
+        if allowed_branches:
+            placeholders = ','.join('?' * len(allowed_branches))
+            conditions.append(f"c.branch_id IN ({placeholders})")
+            params.extend(allowed_branches)
+        if conditions:
+            query += f" AND ({' OR '.join(conditions)})"
 
     if branch_id:
         query += " AND c.branch_id=?"
@@ -781,6 +803,64 @@ def set_user_access(uid):
     conn.close()
     claims = get_jwt()
     log_audit(int(get_jwt_identity()), claims.get('username'), 'set_access', 'user', uid, f'branch:{branch_id}={permission}', ip=request.remote_addr)
+    return jsonify({"success": True})
+
+
+# ─── User Credential Access ──────────────────────────────────────────
+
+@app.route('/api/users/<int:uid>/credential-access')
+@role_required('admin')
+def get_user_credential_access(uid):
+    conn = get_db()
+    # All credentials with user's access status
+    rows = conn.execute("""SELECT c.id, c.name, c.device_type, c.ip_address, c.icon,
+        b.name as branch_name, b.icon as branch_icon,
+        CASE WHEN uca.user_id IS NOT NULL THEN 1 ELSE 0 END as has_access,
+        COALESCE(uca.permission, 'none') as permission
+        FROM credentials c
+        LEFT JOIN branches b ON c.branch_id=b.id
+        LEFT JOIN user_credential_access uca ON c.id=uca.credential_id AND uca.user_id=?
+        ORDER BY b.name, c.name""", (uid,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/users/<int:uid>/credential-access', methods=['PUT'])
+@role_required('admin')
+def set_user_credential_access(uid):
+    d = request.json  # {"credential_id": 1, "permission": "read|write|none"}
+    conn = get_db()
+    cid = d.get('credential_id')
+    permission = d.get('permission', 'none')
+
+    conn.execute("DELETE FROM user_credential_access WHERE user_id=? AND credential_id=?", (uid, cid))
+    if permission != 'none':
+        conn.execute("INSERT INTO user_credential_access (user_id, credential_id, permission) VALUES (?,?,?)",
+                     (uid, cid, permission))
+    conn.commit()
+    conn.close()
+    claims = get_jwt()
+    log_audit(int(get_jwt_identity()), claims.get('username'), 'set_credential_access', 'user', uid,
+              f'cred:{cid}={permission}', ip=request.remote_addr)
+    return jsonify({"success": True})
+
+@app.route('/api/users/<int:uid>/credential-access/bulk', methods=['PUT'])
+@role_required('admin')
+def bulk_set_credential_access(uid):
+    """Set multiple credential access at once"""
+    d = request.json  # {"credentials": [{"id": 1, "permission": "read"}, ...]}
+    conn = get_db()
+    for item in d.get('credentials', []):
+        cid = item.get('id')
+        permission = item.get('permission', 'none')
+        conn.execute("DELETE FROM user_credential_access WHERE user_id=? AND credential_id=?", (uid, cid))
+        if permission != 'none':
+            conn.execute("INSERT INTO user_credential_access (user_id, credential_id, permission) VALUES (?,?,?)",
+                         (uid, cid, permission))
+    conn.commit()
+    conn.close()
+    claims = get_jwt()
+    log_audit(int(get_jwt_identity()), claims.get('username'), 'bulk_credential_access', 'user', uid,
+              f'{len(d.get("credentials",[]))} credentials', ip=request.remote_addr)
     return jsonify({"success": True})
 
 
