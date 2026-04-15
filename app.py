@@ -822,38 +822,47 @@ def set_user_access(uid):
 @role_required('admin')
 def get_user_credential_access(uid):
     conn = get_db()
-    # All credentials with user's access status, grouped by branch
+
+    # ALL branches (even empty ones)
+    all_branches = conn.execute("SELECT * FROM branches ORDER BY name").fetchall()
+
+    # All credentials with user's access status
     rows = conn.execute("""SELECT c.id, c.name, c.device_type, c.ip_address, c.icon,
         c.branch_id,
-        b.name as branch_name, b.icon as branch_icon, b.color as branch_color,
         CASE WHEN uca.user_id IS NOT NULL THEN 1 ELSE 0 END as has_access,
         COALESCE(uca.permission, 'none') as permission
         FROM credentials c
-        LEFT JOIN branches b ON c.branch_id=b.id
         LEFT JOIN user_credential_access uca ON c.id=uca.credential_id AND uca.user_id=?
-        ORDER BY b.name, c.name""", (uid,)).fetchall()
+        ORDER BY c.name""", (uid,)).fetchall()
+
     # Branch access
     branch_access = {}
     for r in conn.execute("SELECT branch_id, permission FROM user_branch_access WHERE user_id=?", (uid,)).fetchall():
         branch_access[r['branch_id']] = r['permission']
     conn.close()
 
-    # Group by branch
-    branches = {}
+    # Group credentials by branch
+    cred_by_branch = {}
     for r in rows:
         bid = r['branch_id'] or 0
-        if bid not in branches:
-            branches[bid] = {
-                'id': bid,
-                'name': r['branch_name'] or 'Kategorisiz',
-                'icon': r['branch_icon'] or 'folder',
-                'color': r['branch_color'] or '#8f99a8',
-                'permission': branch_access.get(bid, 'none'),
-                'credentials': []
-            }
-        branches[bid]['credentials'].append(dict(r))
+        if bid not in cred_by_branch:
+            cred_by_branch[bid] = []
+        cred_by_branch[bid].append(dict(r))
 
-    return jsonify(list(branches.values()))
+    # Build result with ALL branches
+    result = []
+    for b in all_branches:
+        bid = b['id']
+        result.append({
+            'id': bid,
+            'name': b['name'],
+            'icon': b['icon'] or 'building',
+            'color': b['color'] or '#8f99a8',
+            'permission': branch_access.get(bid, 'none'),
+            'credentials': cred_by_branch.get(bid, [])
+        })
+
+    return jsonify(result)
 
 @app.route('/api/users/<int:uid>/credential-access', methods=['PUT'])
 @role_required('admin')
