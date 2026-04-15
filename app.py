@@ -485,7 +485,9 @@ def delete_user(uid):
 @jwt_required()
 def list_branches():
     conn = get_db()
-    branches = conn.execute("SELECT * FROM branches ORDER BY sort_order, name").fetchall()
+    branches = conn.execute("""SELECT b.*, COUNT(c.id) as credential_count
+        FROM branches b LEFT JOIN credentials c ON b.id=c.branch_id
+        GROUP BY b.id ORDER BY b.sort_order, b.name""").fetchall()
     conn.close()
     return jsonify([dict(b) for b in branches])
 

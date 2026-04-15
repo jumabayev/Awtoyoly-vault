@@ -984,14 +984,17 @@ async function fetchCredentials() {
 function filterCredentials() { fetchCredentials(); }
 
 function renderBranchTree() {
+  const totalCreds = allBranches.reduce((sum, b) => sum + (b.credential_count || 0), 0);
   let html = `<div class="branch-item ${!selectedBranch?'active':''}" onclick="selectBranch(null)">
-    <i class="fas fa-globe" style="color:var(--accent)"></i> All Branches
+    <i class="fas fa-globe" style="color:var(--accent)"></i> Tum Subeler
+    <span class="count" style="background:var(--accent);color:#fff;padding:1px 7px;border-radius:10px;font-size:10px;margin-left:auto">${totalCreds}</span>
   </div>`;
   for (const b of allBranches) {
+    const cnt = b.credential_count || 0;
     html += `<div class="branch-item ${selectedBranch==b.id?'active':''}" onclick="selectBranch(${b.id})">
-      <span class="branch-dot" style="background:${escHtml(b.color||'#58a6ff')}"></span>
-      ${escHtml(b.name)}
-      <span class="count">${b.credential_count ?? ''}</span>
+      <i class="fas fa-${escHtml(b.icon||'building')}" style="color:${escHtml(b.color||'#58a6ff')};width:16px;text-align:center;font-size:11px"></i>
+      <span style="flex:1">${escHtml(b.name)}</span>
+      ${cnt > 0 ? `<span class="count" style="background:var(--bg-primary);padding:1px 7px;border-radius:10px;font-size:10px;color:var(--text-dim)">${cnt}</span>` : ''}
     </div>`;
   }
   document.getElementById('branchTree').innerHTML = html;
@@ -1039,6 +1042,13 @@ function renderCredGrid() {
           <button class="btn btn-sm" onclick="event.stopPropagation();editCred(${c.id})"><i class="fas fa-pen"></i> Edit</button>
           <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteCred(${c.id},'${escJs(c.name)}')"><i class="fas fa-trash"></i> Delete</button>
         </div>` : ''}
+        <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px">
+          <div style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11px;color:var(--text-dim)" onclick="event.stopPropagation();loadCredHistory(${c.id})">
+            <i class="fas fa-clock-rotate-left"></i> Degisiklik Gecmisi
+            <i class="fas fa-chevron-down" id="hist-chevron-${c.id}" style="margin-left:auto;font-size:9px;transition:transform .2s"></i>
+          </div>
+          <div id="cred-history-${c.id}" style="display:none;margin-top:8px;max-height:200px;overflow-y:auto"></div>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -1051,6 +1061,51 @@ function detailRowCopy(label, val) {
   return `<div class="detail-row"><span class="detail-label">${label}</span><span class="detail-value mono">${escHtml(val)}</span><button class="copy-btn" onclick="event.stopPropagation();copyText('${escJs(val)}')" title="Copy"><i class="fas fa-copy"></i></button></div>`;
 }
 function escJs(s) { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n'); }
+
+async function loadCredHistory(id) {
+  const container = document.getElementById('cred-history-' + id);
+  const chevron = document.getElementById('hist-chevron-' + id);
+  if (!container) return;
+
+  if (container.style.display === 'block') {
+    container.style.display = 'none';
+    if (chevron) chevron.style.transform = '';
+    return;
+  }
+
+  container.style.display = 'block';
+  if (chevron) chevron.style.transform = 'rotate(180deg)';
+  container.innerHTML = '<div style="color:var(--text-dim);font-size:11px;padding:4px"><i class="fas fa-spinner fa-spin"></i> Yukleniyor...</div>';
+
+  try {
+    const history = await apiFetch('/credentials/' + id + '/history');
+    if (!history.length) {
+      container.innerHTML = '<div style="color:var(--text-dim);font-size:11px;padding:4px">Gecmis kaydi yok</div>';
+      return;
+    }
+    container.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:10px;font-family:var(--font-mono)">
+        <tr style="background:var(--bg-secondary)">
+          <th style="padding:4px 6px;text-align:left;color:var(--text-dim)">Tarih</th>
+          <th style="padding:4px 6px;text-align:left;color:var(--text-dim)">Kim</th>
+          <th style="padding:4px 6px;text-align:left;color:var(--text-dim)">Alan</th>
+          <th style="padding:4px 6px;text-align:left;color:var(--text-dim)">Eski</th>
+          <th style="padding:4px 6px;text-align:left;color:var(--text-dim)">Yeni</th>
+        </tr>
+        ${history.map(h => `
+          <tr style="border-top:1px solid var(--border)">
+            <td style="padding:3px 6px;color:var(--text-dim);white-space:nowrap">${escHtml(h.changed_at || '')}</td>
+            <td style="padding:3px 6px;color:var(--accent)">${escHtml(h.display_name || h.username || '?')}</td>
+            <td style="padding:3px 6px;font-weight:600;color:var(--warning)">${escHtml(h.field_name || '')}</td>
+            <td style="padding:3px 6px;color:var(--danger);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escHtml(h.old_value || '-')}</td>
+            <td style="padding:3px 6px;color:var(--success);max-width:100px;overflow:hidden;text-overflow:ellipsis">${escHtml(h.new_value || '-')}</td>
+          </tr>
+        `).join('')}
+      </table>`;
+  } catch (e) {
+    container.innerHTML = '<div style="color:var(--danger);font-size:11px">Yuklenemedi</div>';
+  }
+}
 
 function toggleCred(id) {
   const el = document.getElementById('cred-' + id);
