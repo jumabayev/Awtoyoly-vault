@@ -1030,8 +1030,8 @@ function renderCredGrid() {
         <div class="detail-row">
           <span class="detail-label">Password</span>
           <span class="detail-value masked mono" id="pw-${c.id}">${escHtml(c.password || '••••••••')}</span>
-          <button class="copy-btn" onclick="event.stopPropagation();togglePwReveal(${c.id})" title="Show/hide"><i class="fas fa-eye"></i></button>
-          <button class="copy-btn" onclick="event.stopPropagation();copyText('${escJs(c.password||'')}')" title="Copy"><i class="fas fa-copy"></i></button>
+          <button class="copy-btn" onclick="event.stopPropagation();togglePwReveal(${c.id})" title="Goster/Gizle"><i class="fas fa-eye"></i></button>
+          <button class="copy-btn" onclick="event.stopPropagation();copyCredPassword(${c.id})" title="Kopyala"><i class="fas fa-copy"></i></button>
         </div>
         ${c.port ? detailRow('Port', c.port) : ''}
         ${c.url ? detailRow('URL', `<a href="${escHtml(c.url)}" target="_blank" onclick="event.stopPropagation()">${escHtml(c.url)}</a>`) : ''}
@@ -1112,9 +1112,43 @@ function toggleCred(id) {
   if (el) el.classList.toggle('expanded');
 }
 
-function togglePwReveal(id) {
+async function copyCredPassword(id) {
+  try {
+    const cred = await apiFetch('/credentials/' + id);
+    if (cred && cred.password) {
+      await navigator.clipboard.writeText(cred.password);
+      toast('Sifre kopyalandi', 'success');
+    }
+  } catch (e) { toast('Kopyalanamadi', 'error'); }
+}
+
+async function togglePwReveal(id) {
   const el = document.getElementById('pw-' + id);
-  if (el) el.classList.toggle('revealed');
+  if (!el) return;
+
+  if (el.dataset.revealed === 'true') {
+    // Hide
+    el.textContent = '••••••••';
+    el.dataset.revealed = 'false';
+    el.classList.remove('revealed');
+    return;
+  }
+
+  // Fetch real password from backend
+  try {
+    el.textContent = '...';
+    const cred = await apiFetch('/credentials/' + id);
+    if (cred && cred.password) {
+      el.textContent = cred.password;
+      el.dataset.revealed = 'true';
+      el.classList.add('revealed');
+    } else {
+      el.textContent = '(bos)';
+    }
+  } catch (e) {
+    el.textContent = '(hata)';
+    toast('Sifre alinamadi', 'error');
+  }
 }
 
 /* Cred Modal */
