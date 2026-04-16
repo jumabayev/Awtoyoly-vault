@@ -28,11 +28,11 @@ async function request(endpoint, options = {}) {
     headers,
   });
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 422) {
     localStorage.removeItem('vault_token');
     localStorage.removeItem('vault_user');
     window.location.href = '/login';
-    throw new ApiError('Unauthorized', 401);
+    throw new ApiError('Session expired', response.status);
   }
 
   let data;
@@ -119,5 +119,55 @@ export const deviceTypes = {
 // Password Generator
 export const generatePassword = (length = 20) =>
   request(`/generate-password?length=${length}`);
+
+// Backup & Restore
+export const backup = {
+  download: async () => {
+    const token = getToken();
+    const response = await fetch(`${BASE_URL}/backup`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (response.status === 401 || response.status === 422) {
+      localStorage.removeItem('vault_token');
+      localStorage.removeItem('vault_user');
+      window.location.href = '/login';
+      throw new ApiError('Session expired', response.status);
+    }
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new ApiError(data?.error || 'Backup failed', response.status);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vault_backup_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '_')}.db`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  restore: async (file) => {
+    const token = getToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${BASE_URL}/restore`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (response.status === 401 || response.status === 422) {
+      localStorage.removeItem('vault_token');
+      localStorage.removeItem('vault_user');
+      window.location.href = '/login';
+      throw new ApiError('Session expired', response.status);
+    }
+    const data = await response.json();
+    if (!response.ok) {
+      throw new ApiError(data?.error || 'Restore failed', response.status);
+    }
+    return data;
+  },
+};
 
 export { ApiError };

@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import {
+  useState, useEffect } from 'react';
 import {
   Plus,
   Pencil,
@@ -8,16 +9,18 @@ import {
   Users as UsersIcon,
   ShieldCheck,
   ShieldOff,
-  KeyRound,
   ChevronDown,
   ChevronRight,
   Check,
+  Key,
 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as Checkbox from '@radix-ui/react-checkbox';
 import toast from 'react-hot-toast';
-import { users as usersApi } from '../lib/api';
-import { cn, formatDate } from '../lib/utils';
+import {
+  users as usersApi } from '../lib/api';
+import {
+  cn, formatDate } from '../lib/utils';
 
 // ---- User Form Modal ----
 function UserModal({ open, onClose, user, onSave }) {
@@ -479,7 +482,7 @@ export default function Users() {
                         className="p-2 rounded-lg text-vault-text-secondary hover:text-amber-400 hover:bg-amber-500/10 transition-all"
                         title="Manage access"
                       >
-                        <KeyRound className="w-4 h-4" />
+                        <Key className="w-4 h-4" />
                       </button>
                       <button
                         onClick={() => {

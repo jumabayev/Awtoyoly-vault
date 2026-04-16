@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ShieldCheck, Eye, EyeOff, Loader2, KeyRound } from 'lucide-react';
+import { ShieldCheck, Eye, EyeOff, Loader2, Key } from 'lucide-react';
 import toast from 'react-hot-toast';
 import useAuthStore from '../store/auth';
 import useThemeStore from '../store/theme';
@@ -25,7 +25,7 @@ export default function Login() {
       toast.success('Welcome back!');
       navigate('/');
     } catch (error) {
-      if (error.status === 401 && error.data?.requires_2fa) {
+      if (error.data?.requires_2fa) {
         setNeeds2FA(true);
         toast('Please enter your 2FA code', { icon: '🔐' });
       } else {
@@ -105,7 +105,7 @@ export default function Login() {
             {needs2FA && (
               <div className="animate-fade-in">
                 <label className="block text-sm font-medium text-vault-text-secondary mb-2">
-                  <KeyRound className="w-4 h-4 inline mr-1" />
+                  <Key className="w-4 h-4 inline mr-1" />
                   Two-Factor Authentication Code
                 </label>
                 <input

@@ -13,6 +13,13 @@ const useAuthStore = create((set, get) => ({
       const payload = { username, password };
       if (totp_code) payload.totp_code = totp_code;
       const data = await authApi.login(payload);
+      if (data.requires_2fa) {
+        set({ isLoading: false });
+        const err = new Error(data.message || '2FA code required');
+        err.status = 200;
+        err.data = data;
+        throw err;
+      }
       localStorage.setItem('vault_token', data.token);
       localStorage.setItem('vault_user', JSON.stringify(data.user));
       set({ user: data.user, token: data.token, isAuthenticated: true, isLoading: false });

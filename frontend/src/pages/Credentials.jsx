@@ -13,6 +13,7 @@ import {
   ChevronRight,
   X,
   Loader2,
+  Key,
   RefreshCw,
   Wand2,
   Globe,
@@ -124,7 +125,7 @@ function CredentialCard({ cred, onEdit, onDelete, isManagerOrAdmin }) {
         <div className="flex items-center gap-2">
           {cred.tags && cred.tags.length > 0 && (
             <div className="hidden sm:flex items-center gap-1">
-              {cred.tags.slice(0, 2).map((tag) => (
+              {(Array.isArray(cred.tags) ? cred.tags : cred.tags.split(',').map(t => t.trim()).filter(Boolean)).slice(0, 2).map((tag) => (
                 <span
                   key={tag}
                   className="text-[10px] px-2 py-0.5 rounded-full bg-vault-accent/10 text-vault-accent"
@@ -925,7 +926,7 @@ export default function Credentials() {
             </div>
           ) : credList.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-vault-text-secondary">
-              <KeyRound className="w-12 h-12 mb-3 opacity-30" />
+              <Key className="w-12 h-12 mb-3 opacity-30" />
               <p className="text-lg font-medium">No credentials found</p>
               <p className="text-sm mt-1">
                 {search || selectedBranch || selectedDeviceType

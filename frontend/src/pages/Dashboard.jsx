@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { KeyRound, GitBranch, Users, Activity, Server, Shield, Network, Loader2 } from 'lucide-react';
+import { Key, GitBranch, Users, Activity, Server, Shield, Network, Loader2 } from 'lucide-react';
 import { dashboard as dashboardApi } from '../lib/api';
 import { formatRelativeTime, cn } from '../lib/utils';
 import { getDeviceIcon } from '../lib/deviceTypes';
@@ -167,7 +167,7 @@ export default function Dashboard() {
       {/* Stat cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard
-          icon={KeyRound}
+          icon={Key}
           label="Total Credentials"
           value={data?.total_credentials ?? 0}
           color="#3b82f6"

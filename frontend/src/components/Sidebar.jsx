@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   ShieldCheck,
   LayoutDashboard,
-  KeyRound,
+  Key,
   GitBranch,
   Users as UsersIcon,
   ScrollText,
@@ -21,7 +21,7 @@ import { cn } from '../lib/utils';
 
 const navItems = [
   { path: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/credentials', label: 'Credentials', icon: KeyRound, hasSub: true },
+  { path: '/credentials', label: 'Credentials', icon: Key, hasSub: true },
   { path: '/branches', label: 'Subeler', icon: GitBranch },
   { path: '/users', label: 'Users', icon: UsersIcon, adminOnly: true },
   { path: '/audit', label: 'Audit Log', icon: ScrollText, adminOnly: true },
@@ -31,7 +31,6 @@ const navItems = [
 export default function Sidebar({ isOpen, onClose }) {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-  const isAdmin = useAuthStore((s) => s.isAdmin);
   const theme = useThemeStore((s) => s.theme);
   const toggleTheme = useThemeStore((s) => s.toggleTheme);
   const navigate = useNavigate();
@@ -52,8 +51,9 @@ export default function Sidebar({ isOpen, onClose }) {
     onClose?.();
   };
 
+  const userRole = user?.role || 'viewer';
   const filteredNavItems = navItems.filter(
-    (item) => !item.adminOnly || isAdmin()
+    (item) => !item.adminOnly || userRole === 'admin'
   );
 
   return (

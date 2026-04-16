@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import {
+  useState, useRef } from 'react';
 import {
   Lock,
   ShieldCheck,
@@ -7,13 +8,19 @@ import {
   Eye,
   EyeOff,
   QrCode,
-  KeyRound,
   CheckCircle2,
+  Key,
+  Download,
+  Upload,
+  Database,
+  AlertTriangle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { auth as authApi } from '../lib/api';
+import {
+  auth as authApi, backup as backupApi } from '../lib/api';
 import useAuthStore from '../store/auth';
-import { cn, getPasswordStrength } from '../lib/utils';
+import {
+  cn, getPasswordStrength } from '../lib/utils';
 
 // ---- Change Password Section ----
 function ChangePasswordSection() {
@@ -255,7 +262,7 @@ function TwoFactorSection() {
           <div className="flex flex-col items-center p-6 bg-white rounded-xl max-w-xs mx-auto">
             {qrData.qr_code ? (
               <img
-                src={`data:image/png;base64,${qrData.qr_code}`}
+                src={qrData.qr_code}
                 alt="QR Code for 2FA setup"
                 className="w-48 h-48"
               />
@@ -316,11 +323,155 @@ function TwoFactorSection() {
           {loading ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
-            <KeyRound className="w-4 h-4" />
+            <Key className="w-4 h-4" />
           )}
           Setup 2FA
         </button>
       )}
+    </div>
+  );
+}
+
+// ---- Backup & Restore Section (Admin only) ----
+function BackupRestoreSection() {
+  const [downloading, setDownloading] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [confirmRestore, setConfirmRestore] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const handleBackup = async () => {
+    setDownloading(true);
+    try {
+      await backupApi.download();
+      toast.success('Yedek indirildi');
+    } catch (error) {
+      toast.error(error.message || 'Yedekleme basarisiz');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (!file.name.endsWith('.db')) {
+      toast.error('Sadece .db dosyalari kabul edilir');
+      return;
+    }
+    setSelectedFile(file);
+    setConfirmRestore(true);
+  };
+
+  const handleRestore = async () => {
+    if (!selectedFile) return;
+    setRestoring(true);
+    try {
+      await backupApi.restore(selectedFile);
+      toast.success('Veritabani geri yuklendi. Sayfa yenileniyor...');
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (error) {
+      toast.error(error.message || 'Geri yukleme basarisiz');
+    } finally {
+      setRestoring(false);
+      setConfirmRestore(false);
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const cancelRestore = () => {
+    setConfirmRestore(false);
+    setSelectedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  return (
+    <div className="bg-vault-card border border-vault-border rounded-2xl p-6">
+      <div className="flex items-center gap-3 mb-6">
+        <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+          <Database className="w-5 h-5 text-emerald-400" />
+        </div>
+        <div>
+          <h3 className="text-lg font-semibold text-vault-text">Veritabani Yedekleme</h3>
+          <p className="text-sm text-vault-text-secondary">Yedek al veya geri yukle</p>
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        {/* Backup */}
+        <div className="flex items-center justify-between p-4 rounded-xl bg-vault-bg border border-vault-border">
+          <div>
+            <p className="text-sm font-medium text-vault-text">Yedek Al</p>
+            <p className="text-xs text-vault-text-secondary mt-0.5">Tum veritabanini .db dosyasi olarak indir</p>
+          </div>
+          <button
+            onClick={handleBackup}
+            disabled={downloading}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 transition-all disabled:opacity-50"
+          >
+            {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Indir
+          </button>
+        </div>
+
+        {/* Restore */}
+        <div className="p-4 rounded-xl bg-vault-bg border border-vault-border">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-vault-text">Geri Yukle</p>
+              <p className="text-xs text-vault-text-secondary mt-0.5">Yedek dosyasindan veritabanini geri yukle</p>
+            </div>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={restoring}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 transition-all disabled:opacity-50"
+            >
+              {restoring ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+              Dosya Sec
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".db"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+          </div>
+
+          {/* Confirmation dialog */}
+          {confirmRestore && selectedFile && (
+            <div className="mt-4 p-4 rounded-xl bg-red-500/5 border border-red-500/20">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-red-400">Dikkat!</p>
+                  <p className="text-xs text-vault-text-secondary mt-1">
+                    <strong>{selectedFile.name}</strong> dosyasi yuklenerek mevcut tum veriler degistirilecek.
+                    Devam etmeden once yedek aldiginizdan emin olun.
+                  </p>
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={cancelRestore}
+                      className="px-3 py-2 rounded-lg text-xs font-medium text-vault-text-secondary hover:text-vault-text hover:bg-vault-hover transition-all"
+                    >
+                      Iptal
+                    </button>
+                    <button
+                      onClick={handleRestore}
+                      disabled={restoring}
+                      className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-red-600 hover:bg-red-700 transition-all disabled:opacity-50"
+                    >
+                      {restoring && <Loader2 className="w-3 h-3 animate-spin" />}
+                      Evet, Geri Yukle
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -367,6 +518,7 @@ export default function Settings() {
 
       <ChangePasswordSection />
       <TwoFactorSection />
+      {user?.role === 'admin' && <BackupRestoreSection />}
     </div>
   );
 }

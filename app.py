@@ -2,17 +2,21 @@
 Awtoyoly Vault - IT Infrastructure Password & Credential Manager
 Multi-user, 2FA (TOTP), AES-256 encryption, RBAC, audit log
 """
-from flask import Flask, render_template, jsonify, request, send_file
+from flask import Flask, render_template, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from datetime import datetime, timedelta
-import sqlite3, os, json, io, base64, secrets, hashlib
+import sqlite3, os, json, io, base64, secrets, hashlib, shutil
 import bcrypt, pyotp, qrcode
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from functools import wraps
 
-app = Flask(__name__)
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), 'frontend', 'dist')
+app = Flask(__name__,
+            static_folder=FRONTEND_DIR if os.path.exists(FRONTEND_DIR) else 'static',
+            static_url_path='',
+            template_folder=FRONTEND_DIR if os.path.exists(FRONTEND_DIR) else 'templates')
 CORS(app)
 
 # Fixed JWT secret - persists across restarts
@@ -189,16 +193,31 @@ def init_db():
 
     # Default branches
     if not c.execute("SELECT id FROM branches").fetchone():
-        for name, icon, color in [
+        for sort_order, (name, icon, color) in enumerate([
             ('Merkez Ofis', 'building', '#3b82f6'),
-            ('Sunucular', 'server', '#22c55e'),
-            ('Firewall', 'shield-halved', '#f59e0b'),
-            ('Switch & Network', 'network-wired', '#06b6d4'),
-            ('NVR & Kamera', 'video', '#a855f7'),
-            ('Santral (PBX)', 'phone', '#ec4899'),
-            ('ESXi & VM', 'cubes', '#ef4444'),
-        ]:
-            c.execute("INSERT INTO branches (name, icon, color) VALUES (?,?,?)", (name, icon, color))
+            ('ARTYK AE', 'building', '#22c55e'),
+            ('AWTOMOTIW', 'building', '#f59e0b'),
+            ('AWTOYOLY', 'building', '#ef4444'),
+            ('BANAN', 'building', '#a855f7'),
+            ('DOWLETLI DOWRAN', 'building', '#ec4899'),
+            ('DURUN', 'building', '#06b6d4'),
+            ('ENGINEERING', 'building', '#f97316'),
+            ('ESRETLI ATYZ', 'building', '#14b8a6'),
+            ('EZIZ DOGANLAR', 'building', '#8b5cf6'),
+            ('GURSAK', 'building', '#64748b'),
+            ('HEMSAYA', 'building', '#84cc16'),
+            ('KONSENTRAT', 'building', '#e11d48'),
+            ('LEBIZ', 'building', '#0ea5e9'),
+            ('MIWEAGPJ', 'building', '#d946ef'),
+            ('NEKTARIN', 'building', '#f43f5e'),
+            ('SINTEPON', 'building', '#10b981'),
+            ('TOMATNY', 'building', '#dc2626'),
+            ('TRANSPORT', 'building', '#2563eb'),
+            ('YIGIT', 'building', '#7c3aed'),
+            ('YUMAK', 'building', '#059669'),
+            ('YUPLUK', 'building', '#ca8a04'),
+        ]):
+            c.execute("INSERT INTO branches (name, icon, color, sort_order) VALUES (?,?,?,?)", (name, icon, color, sort_order))
 
     conn.commit()
     conn.close()
@@ -237,7 +256,7 @@ def role_required(*roles):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return app.send_static_file('index.html')
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -625,6 +644,9 @@ def get_credential(cid):
 def create_credential():
     d = request.json
     uid = int(get_jwt_identity())
+    tags = d.get('tags', '')
+    if isinstance(tags, list):
+        tags = ','.join(tags)
 
     conn = get_db()
     c = conn.execute("""INSERT INTO credentials
@@ -634,7 +656,7 @@ def create_credential():
          d.get('hostname', ''), d.get('ip_address', ''), d.get('port', ''),
          d.get('username', ''), encrypt(d.get('password', '')),
          d.get('url', ''), d.get('protocol', 'ssh'),
-         d.get('notes', ''), d.get('tags', ''),
+         d.get('notes', ''), tags,
          d.get('icon', 'server'), d.get('color'),
          uid, uid))
     # Record creation in history
@@ -655,6 +677,8 @@ def update_credential(cid):
     d = request.json
     uid = int(get_jwt_identity())
     claims = get_jwt()
+    if 'tags' in d and isinstance(d['tags'], list):
+        d['tags'] = ','.join(d['tags'])
 
     conn = get_db()
     old = conn.execute("SELECT * FROM credentials WHERE id=?", (cid,)).fetchone()
@@ -942,6 +966,72 @@ def generate_password():
     chars = string.ascii_letters + string.digits + '!@#$%&*'
     pw = ''.join(secrets.choice(chars) for _ in range(max(8, min(64, length))))
     return jsonify({"password": pw})
+
+
+# ─── Backup & Restore ───────────────────────────────────────────────
+
+@app.route('/api/backup')
+@role_required('admin')
+def backup_db():
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    claims = get_jwt()
+    log_audit(int(get_jwt_identity()), claims.get('username'), 'backup', 'system', 0, f'backup_{timestamp}', ip=request.remote_addr)
+    return send_file(DB_PATH, as_attachment=True, download_name=f'vault_backup_{timestamp}.db')
+
+
+@app.route('/api/restore', methods=['POST'])
+@role_required('admin')
+def restore_db():
+    if 'file' not in request.files:
+        return jsonify({"error": "Dosya secilmedi"}), 400
+
+    file = request.files['file']
+    if not file.filename.endswith('.db'):
+        return jsonify({"error": "Gecersiz dosya formati. .db olmali"}), 400
+
+    temp_path = DB_PATH + '.upload_temp'
+    file.save(temp_path)
+
+    try:
+        conn = sqlite3.connect(temp_path)
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+        for t in ['users', 'credentials', 'branches']:
+            if t not in tables:
+                conn.close()
+                os.remove(temp_path)
+                return jsonify({"error": f"Gecersiz yedek: '{t}' tablosu eksik"}), 400
+        conn.close()
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return jsonify({"error": "Gecersiz veritabani dosyasi"}), 400
+
+    claims = get_jwt()
+    log_audit(int(get_jwt_identity()), claims.get('username'), 'restore', 'system', 0, file.filename, ip=request.remote_addr)
+
+    backup_path = DB_PATH + '.pre_restore'
+    shutil.copy2(DB_PATH, backup_path)
+    shutil.move(temp_path, DB_PATH)
+
+    return jsonify({"success": True, "message": "Veritabani basariyla geri yuklendi"})
+
+
+# SPA catch-all - MUST be after all API routes
+@app.route('/<path:path>')
+def catch_all(path):
+    if path.startswith('api/'):
+        return jsonify({"error": "Not found"}), 404
+    file_path = os.path.join(FRONTEND_DIR, path)
+    if os.path.isfile(file_path):
+        return send_from_directory(FRONTEND_DIR, path)
+    return send_from_directory(FRONTEND_DIR, 'index.html')
+
+
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith('/api/'):
+        return jsonify({"error": "Not found"}), 404
+    return send_from_directory(FRONTEND_DIR, 'index.html')
 
 
 if __name__ == '__main__':
